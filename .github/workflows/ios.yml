@@ -18,21 +18,32 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Diagnostics
+      - name: Diagnostics (before)
         run: |
           xcodegen --version
           echo "===== project.yml ====="
           cat project.yml
-          echo "======================="
-          echo "===== objectVersion in generated pbxproj ====="
-          grep -m1 "objectVersion" BleSkud.xcodeproj/project.pbxproj || true
 
       - name: Generate Xcode project
         run: xcodegen generate
 
-      - name: Show objectVersion AFTER generation
+      - name: Patch pbxproj to Xcode 15 format (objectVersion 60)
         run: |
-          grep -m1 "objectVersion" BleSkud.xcodeproj/project.pbxproj || true
+          PBX=BleSkud.xcodeproj/project.pbxproj
+          echo "Before patch:"
+          grep -m1 "objectVersion" "$PBX" || true
+
+          # XcodeGen 2.46.0 emits objectVersion 77 regardless of project.yml.
+          # Downgrade to objectVersion 60 (Xcode 15) so Xcode 15.4 can open it.
+          sed -i '' 's/objectVersion = 77;/objectVersion = 60;/g' "$PBX"
+          sed -i '' 's/compatibilityVersion = "Xcode 15.3";/compatibilityVersion = "Xcode 14.0";/g' "$PBX"
+
+          # Also handle any other compatibilityVersion value XcodeGen might emit
+          sed -i '' 's/compatibilityVersion = "Xcode 16.0";/compatibilityVersion = "Xcode 14.0";/g' "$PBX"
+
+          echo "After patch:"
+          grep -m1 "objectVersion" "$PBX" || true
+          grep -m1 "compatibilityVersion" "$PBX" || true
 
       - name: Build (unsigned)
         run: |
