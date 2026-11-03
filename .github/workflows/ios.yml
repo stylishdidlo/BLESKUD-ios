@@ -1,0 +1,26 @@
+name: Build iOS IPA
+
+on:
+  push: { branches: [ main, master ] }
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - run: |
+          xcodebuild -project BleSkud.xcodeproj -scheme BleSkud \
+            -configuration Release -sdk iphoneos -derivedDataPath build \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO build
+      - run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/BleSkud.app Payload/
+          zip -r BleSkud-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BleSkud-ipa
+          path: BleSkud-unsigned.ipa

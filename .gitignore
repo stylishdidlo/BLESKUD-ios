@@ -1,0 +1,7 @@
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+BleSkud.xcodeproj/
+.DS_Store
+local.properties
