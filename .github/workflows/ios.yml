@@ -1,12 +1,6 @@
-name: Build iOS IPA
-
-on:
-  push: { branches: [ main, master ] }
-  workflow_dispatch:
-
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15          # ← было macos-14
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
