@@ -1,8 +1,11 @@
 name: BleSkud
 options:
   bundleIdPrefix: com.example
-  deploymentTarget: {iOS: "15.0"}
+  deploymentTarget:
+    iOS: "15.0"
   createIntermediateGroups: true
+  xcodeVersion: "15.0"        # ← ДОБАВИТЬ ЭТУ СТРОКУ
+
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -10,13 +13,17 @@ settings:
     CODE_SIGNING_REQUIRED: NO
     CODE_SIGNING_ALLOWED: NO
     CODE_SIGN_IDENTITY: ""
+
 targets:
   BleSkud:
     type: application
     platform: iOS
-    sources: [{path: Sources}]
+    sources:
+      - path: Sources
     settings:
       base:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.example.bleskud
         PRODUCT_NAME: BleSkud
+    scheme:
+      testTargets: []
