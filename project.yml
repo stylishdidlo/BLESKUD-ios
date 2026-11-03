@@ -4,7 +4,8 @@ options:
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true
-  xcodeVersion: "15.0"        # ← ДОБАВИТЬ ЭТУ СТРОКУ
+  objectVersion: 60            # ← ГЛАВНОЕ: формат Xcode 15 (не 77!)
+  xcodeVersion: "15.0"
 
 settings:
   base:
@@ -25,5 +26,3 @@ targets:
         INFOPLIST_FILE: Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.example.bleskud
         PRODUCT_NAME: BleSkud
-    scheme:
-      testTargets: []
