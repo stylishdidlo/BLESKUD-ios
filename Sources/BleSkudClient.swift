@@ -3,14 +3,6 @@ import CoreBluetooth
 import CommonCrypto
 import Combine
 
-struct AccessProfile {
-    let name: String
-    let skudUuid: String
-    let keyId: Int
-    let aesToken: String
-    let rssiThreshold: Int
-}
-
 enum SkudState: Equatable {
     case idle, scanning
     case connecting(String), connected(String, Int), success(String), failed(String)

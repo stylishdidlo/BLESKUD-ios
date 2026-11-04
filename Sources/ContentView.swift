@@ -1,57 +1,148 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
-    @StateObject private var c = BleSkudClient()
-    @State private var uuid  = "00000002-5BB2-0000-0000-000000000000"
-    @State private var keyId = "3891637"
-    @State private var token = "pcjhp6060px38f9b"
-    @State private var rssi  = "-70"
+    @StateObject private var client = BleSkudClient()
+    @StateObject private var store = ProfileStore()
+
+    @State private var activeProfile: AccessProfile?
+    @State private var editingProfile: AccessProfile?
+    @State private var showingEditor = false
+    @State private var showingImporter = false
+    @State private var showingExporter = false
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    fld("UUID", $uuid, .default)
-                    fld("KeyID", $keyId, .numberPad)
-                    fld("AES", $token, .default)
-                    fld("RSSI", $rssi, .numbersAndPunctuation)
-                    HStack(spacing: 12) {
-                        Button("Start") { go() }.buttonStyle(.borderedProminent)
-                        Button("Stop") { c.stop() }.buttonStyle(.bordered)
-                    }.frame(maxWidth: .infinity).padding(.top, 8)
-                    Text(st).font(.headline)
-                    Divider()
-                    Text(c.logLines.joined(separator: "\n"))
+            List {
+                Section("Профили") {
+                    if store.profiles.isEmpty {
+                        Text("(нет профилей — нажмите +)")
+                            .foregroundColor(.secondary)
+                    }
+                    ForEach(store.profiles) { p in
+                        Button {
+                            activeProfile = p
+                        } label: {
+                            HStack {
+                                Text(activeProfile?.id == p.id ? "●" : "○")
+                                VStack(alignment: .leading) {
+                                    Text(p.name).font(.headline)
+                                    Text(p.skudUuid).font(.caption).foregroundColor(.secondary)
+                                    Text("KeyID \(p.keyId), RSSI ≥ \(p.rssiThreshold)")
+                                        .font(.caption2).foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                store.delete(id: p.id)
+                                if activeProfile?.id == p.id { activeProfile = nil }
+                            } label: { Label("Удалить", systemImage: "trash") }
+                            Button {
+                                editingProfile = p
+                                showingEditor = true
+                            } label: { Label("Изм.", systemImage: "pencil") }
+                            .tint(.blue)
+                        }
+                    }
+                }
+
+                Section {
+                    HStack {
+                        Button("Start") { start() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(activeProfile == nil)
+                        Button("Stop") { client.stop() }
+                            .buttonStyle(.bordered)
+                    }
+                }
+
+                Section("Статус") {
+                    Text(stateText).font(.headline)
+                    Text(client.logLines.joined(separator: "\n"))
                         .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }.padding()
-            }.navigationTitle("BLE SKUD")
+                        .textSelection(.enabled)
+                }
+            }
+            .navigationTitle("BLE SKUD")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Menu {
+                        Button("+ Новый профиль") {
+                            editingProfile = nil
+                            showingEditor = true
+                        }
+                        Button("Импорт из файла") { showingImporter = true }
+                        Button("Экспорт в файл") { showingExporter = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                }
+            }
+            .sheet(isPresented: $showingEditor) {
+                ProfileEditorView(
+                    profile: editingProfile,
+                    onSave: { p in
+                        store.upsert(p)
+                        if activeProfile?.id == p.id { activeProfile = p }
+                        if activeProfile == nil { activeProfile = p }
+                        showingEditor = false
+                    },
+                    onCancel: { showingEditor = false },
+                    onDelete: editingProfile.map { p in
+                        { store.delete(id: p.id); if activeProfile?.id == p.id { activeProfile = nil }; showingEditor = false }
+                    }
+                )
+            }
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.json, .plainText],
+                allowsMultipleSelection: false
+            ) { result in
+                if case .success(let urls) = result, let url = urls.first {
+                    _ = url.startAccessingSecurityScopedResource()
+                    defer { url.stopAccessingSecurityScopedResource() }
+                    if let json = try? String(contentsOf: url) {
+                        _ = store.importJSON(json)
+                    }
+                }
+            }
+            .fileExporter(
+                isPresented: $showingExporter,
+                document: JSONDocument(text: store.exportJSON()),
+                contentType: .json,
+                defaultFilename: "ble_skud_profiles.json"
+            ) { _ in }
         }
     }
 
-    func fld(_ t: String, _ b: Binding<String>, _ kb: UIKeyboardType) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(t).font(.caption).foregroundColor(.secondary)
-            TextField(t, text: b).keyboardType(kb)
-                .disableAutocorrection(true)
-                .textInputAutocapitalization(.never)
-                .textFieldStyle(.roundedBorder)
-        }
+    private func start() {
+        guard let p = activeProfile else { return }
+        client.startScan(profile: p)
     }
 
-    func go() {
-        guard let k = Int(keyId), let r = Int(rssi) else { return }
-        c.startScan(profile: AccessProfile(name: "T", skudUuid: uuid, keyId: k, aesToken: token, rssiThreshold: r))
-    }
-
-    var st: String {
-        switch c.state {
+    private var stateText: String {
+        switch client.state {
         case .idle: return "Idle"
         case .scanning: return "Scanning..."
-        case .connecting(let u): return "Connect \(u)"
-        case .connected(let u, let r): return "OK \(u) \(r)"
+        case .connecting(let u): return "Connecting \(u)"
+        case .connected(let u, let r): return "Connected \(u) \(r)"
         case .success: return "OPEN SIGNAL SENT"
         case .failed(let r): return "FAIL: \(r)"
         }
+    }
+}
+
+// ─── JSON document для fileExporter ───
+struct JSONDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    var text: String
+    init(text: String) { self.text = text }
+    init(configuration: ReadConfiguration) throws {
+        let data = configuration.file.regularFileContents ?? Data()
+        text = String(data: data, encoding: .utf8) ?? ""
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: text.data(using: .utf8) ?? Data())
     }
 }
