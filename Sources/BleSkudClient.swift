@@ -15,6 +15,9 @@ final class BleSkudClient: NSObject, ObservableObject {
     @Published private(set) var state: SkudState = .idle
     @Published private(set) var logLines: [String] = []
 
+    // НОВОЕ: список для UI
+    @Published private(set) var scannedPeripherals: [(peripheral: CBPeripheral, name: String, rssi: Int)] = []
+
     private var central: CBCentralManager!
     private var prof: AccessProfile?
     private var per: CBPeripheral?
@@ -23,6 +26,7 @@ final class BleSkudClient: NSObject, ObservableObject {
     private var salt = Data()
     private var rssi: Int = 0
     private var to: DispatchWorkItem?
+    private var isRawScanning = false
 
     override init() {
         super.init()
@@ -30,7 +34,7 @@ final class BleSkudClient: NSObject, ObservableObject {
     }
 
     func startScan(profile p: AccessProfile) {
-        prof = p; salt = Data(); rssi = 0
+        prof = p; salt = Data(); rssi = 0; isRawScanning = false
         guard central.state == .poweredOn else { return fail("BT off") }
         guard let u = UUID(uuidString: p.skudUuid) else { return fail("Bad UUID") }
         set(.scanning); log("Scan \(p.skudUuid)")
@@ -44,10 +48,40 @@ final class BleSkudClient: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: w)
     }
 
+    // НОВОЕ: сканируем всё
+    func startScanAll() {
+        guard central.state == .poweredOn else { return fail("BT off") }
+        isRawScanning = true
+        scannedPeripherals.removeAll()
+        set(.scanning)
+        log("Scanning ALL devices...")
+        central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
+            if self?.isRawScanning == true {
+                self?.stopScan()
+                self?.set(.idle)
+                self?.log("Scan finished")
+            }
+        }
+    }
+
+    // НОВОЕ: прямое подключение
+    func connectDirect(peripheral p: CBPeripheral) {
+        isRawScanning = false
+        stopScan()
+        per = p
+        p.delegate = self
+        set(.connecting(p.identifier.uuidString))
+        log("Connecting to \(p.name ?? "Unknown")...")
+        central.connect(p, options: nil)
+    }
+
     func stop() {
         to?.cancel(); stopScan()
         if let p = per { central.cancelPeripheralConnection(p) }
         per = nil; wChar = nil; nChar = nil; salt = Data(); set(.idle)
+        isRawScanning = false
     }
 
     func stopScan() { if central.state == .poweredOn { central.stopScan() } }
@@ -101,6 +135,23 @@ extension BleSkudClient: CBCentralManagerDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData: [String: Any], rssi R: NSNumber) {
+
+        // Если это режим "сканировать всё"
+        if isRawScanning {
+            let rssi = R.intValue
+            if rssi < -100 { return }
+            let name = p.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown"
+
+            if !scannedPeripherals.contains(where: { $0.peripheral.identifier == p.identifier }) {
+                DispatchQueue.main.async {
+                    self.scannedPeripherals.append((p, name, rssi))
+                    self.scannedPeripherals.sort { $0.rssi > $1.rssi }
+                }
+            }
+            return
+        }
+
+        // Обычный режим
         guard let pr = prof, R.intValue >= pr.rssiThreshold else { return }
         to?.cancel(); stopScan()
         per = p; rssi = R.intValue; p.delegate = self
@@ -110,8 +161,8 @@ extension BleSkudClient: CBCentralManagerDelegate {
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         log("Connected")
-        guard let s = prof?.skudUuid, let u = UUID(uuidString: s) else { return fail("Bad UUID") }
-        p.discoverServices([CBUUID(nsuuid: u)])
+        // Ищем сервисы без фильтра по UUID (просим всё)
+        p.discoverServices(nil)
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
@@ -127,9 +178,11 @@ extension BleSkudClient: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         if let e = error { return fail("Svc: \(e.localizedDescription)") }
         guard let s = p.services, !s.isEmpty else { return fail("No svc") }
-        let t: CBUUID? = { guard let u = UUID(uuidString: prof?.skudUuid ?? "") else { return nil }; return CBUUID(nsuuid: u) }()
-        let svc = s.first(where: { $0.uuid == t }) ?? s[0]
-        p.discoverCharacteristics([Self.wUUID, Self.nUUID], for: svc)
+
+        // Просим найти наши характеристики во ВСЕХ сервисах
+        for svc in s {
+            p.discoverCharacteristics([Self.wUUID, Self.nUUID], for: svc)
+        }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
@@ -138,10 +191,13 @@ extension BleSkudClient: CBPeripheralDelegate {
             if ch.uuid == Self.wUUID { wChar = ch }
             if ch.uuid == Self.nUUID { nChar = ch }
         }
-        guard let n = nChar, wChar != nil else { return fail("No f401/f402") }
-        p.setNotifyValue(true, for: n)
-        log("Notif on, wait salt")
-        set(.connected(prof?.skudUuid ?? "?", rssi))
+
+        // Если нашли обе - включаем уведомления
+        if let n = nChar, wChar != nil {
+            p.setNotifyValue(true, for: n)
+            log("Notif on, wait salt")
+            set(.connected(prof?.skudUuid ?? "Direct", rssi))
+        }
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
@@ -154,7 +210,7 @@ extension BleSkudClient: CBPeripheralDelegate {
 
     func peripheral(_ p: CBPeripheral, didWriteValueFor ch: CBCharacteristic, error: Error?) {
         if let e = error { fail("Write: \(e.localizedDescription)") }
-        else { log("SENT"); set(.success(prof?.skudUuid ?? "?")) }
+        else { log("SENT"); set(.success(prof?.skudUuid ?? "Direct")) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             self.central.cancelPeripheralConnection(p)
         }

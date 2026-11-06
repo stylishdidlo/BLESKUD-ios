@@ -10,6 +10,7 @@ struct ContentView: View {
     @State private var showingEditor = false
     @State private var showingImporter = false
     @State private var showingExporter = false
+    @State private var showingScanner = false // НОВОЕ
 
     var body: some View {
         NavigationView {
@@ -55,6 +56,14 @@ struct ContentView: View {
                         Button("Stop") { client.stop() }
                             .buttonStyle(.bordered)
                     }
+
+                    // НОВАЯ КНОПКА
+                    Button("Поиск всех BLE-устройств (Debug)") {
+                        showingScanner = true
+                        client.startScanAll()
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.orange)
                 }
 
                 Section("Статус") {
@@ -93,6 +102,37 @@ struct ContentView: View {
                         { store.delete(id: p.id); if activeProfile?.id == p.id { activeProfile = nil }; showingEditor = false }
                     }
                 )
+            }
+            // НОВОЕ: Окно сканера
+            .sheet(isPresented: $showingScanner) {
+                NavigationView {
+                    List(client.scannedPeripherals, id: \.peripheral.identifier) { item in
+                        Button {
+                            if activeProfile == nil {
+                                // Если нет профиля, не подключаемся
+                                return
+                            }
+                            showingScanner = false
+                            client.connectDirect(peripheral: item.peripheral)
+                        } label: {
+                            VStack(alignment: .leading) {
+                                Text(item.name).font(.headline)
+                                Text(item.peripheral.identifier.uuidString)
+                                    .font(.caption).foregroundColor(.secondary)
+                                Text("RSSI: \(item.rssi) dBm").font(.caption2).foregroundColor(.blue)
+                            }
+                        }
+                    }
+                    .navigationTitle("Выберите домофон")
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Закрыть") {
+                                showingScanner = false
+                                client.stop()
+                            }
+                        }
+                    }
+                }
             }
             .fileImporter(
                 isPresented: $showingImporter,
