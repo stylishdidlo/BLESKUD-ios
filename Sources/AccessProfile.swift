@@ -7,6 +7,7 @@ struct AccessProfile: Identifiable, Codable, Equatable {
     var keyId: Int
     var aesToken: String
     var rssiThreshold: Int
+    var isSkudIdMode: Bool = false
 }
 
 struct ProfileExport: Codable {

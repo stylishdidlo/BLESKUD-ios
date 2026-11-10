@@ -10,7 +10,13 @@ struct ContentView: View {
     @State private var showingEditor = false
     @State private var showingImporter = false
     @State private var showingExporter = false
-    @State private var showingScanner = false // НОВОЕ
+    @State private var showingScanner = false
+
+    // Фильтры сканера
+    @State private var filterByUuid = true
+    @State private var filterBySkud = false
+    @State private var filterBySvc = false
+    @State private var filterStrongSignal = false
 
     var body: some View {
         NavigationView {
@@ -28,7 +34,8 @@ struct ContentView: View {
                                 Text(activeProfile?.id == p.id ? "●" : "○")
                                 VStack(alignment: .leading) {
                                     Text(p.name).font(.headline)
-                                    Text(p.skudUuid).font(.caption).foregroundColor(.secondary)
+                                    let displayUuid = p.isSkudIdMode ? "SKUD_ID: \(p.skudUuid)" : p.skudUuid
+                                    Text(displayUuid).font(.caption).foregroundColor(.secondary)
                                     Text("KeyID \(p.keyId), RSSI ≥ \(p.rssiThreshold)")
                                         .font(.caption2).foregroundColor(.secondary)
                                 }
@@ -56,11 +63,10 @@ struct ContentView: View {
                         Button("Stop") { client.stop() }
                             .buttonStyle(.bordered)
                     }
-
-                    // НОВАЯ КНОПКА
+                    
                     Button("Поиск всех BLE-устройств (Debug)") {
                         showingScanner = true
-                        client.startScanAll()
+                        startScanner()
                     }
                     .buttonStyle(.bordered)
                     .tint(.orange)
@@ -103,23 +109,33 @@ struct ContentView: View {
                     }
                 )
             }
-            // НОВОЕ: Окно сканера
+            // Окно сканера с фильтрами
             .sheet(isPresented: $showingScanner) {
                 NavigationView {
-                    List(client.scannedPeripherals, id: \.peripheral.identifier) { item in
-                        Button {
-                            if activeProfile == nil {
-                                // Если нет профиля, не подключаемся
-                                return
+                    VStack {
+                        Form {
+                            Section("Фильтры") {
+                                Toggle("UUID префикс f45389a8", isOn: $filterByUuid)
+                                Toggle("Содержит SKUD_ID", isOn: $filterBySkud)
+                                    .disabled(activeProfile == nil)
+                                Toggle("Есть любые Service UUID", isOn: $filterBySvc)
+                                Toggle("Только ближе -75 dBm", isOn: $filterStrongSignal)
                             }
-                            showingScanner = false
-                            client.connectDirect(peripheral: item.peripheral)
-                        } label: {
-                            VStack(alignment: .leading) {
-                                Text(item.name).font(.headline)
-                                Text(item.peripheral.identifier.uuidString)
-                                    .font(.caption).foregroundColor(.secondary)
-                                Text("RSSI: \(item.rssi) dBm").font(.caption2).foregroundColor(.blue)
+                        }
+                        .frame(height: 220)
+                        
+                        List(client.scannedPeripherals, id: \.peripheral.identifier) { item in
+                            Button {
+                                if activeProfile == nil { return }
+                                showingScanner = false
+                                client.connectDirect(peripheral: item.peripheral)
+                            } label: {
+                                VStack(alignment: .leading) {
+                                    Text(item.name).font(.headline)
+                                    Text(item.peripheral.identifier.uuidString)
+                                        .font(.caption).foregroundColor(.secondary)
+                                    Text("RSSI: \(item.rssi) dBm").font(.caption2).foregroundColor(.blue)
+                                }
                             }
                         }
                     }
@@ -132,6 +148,10 @@ struct ContentView: View {
                             }
                         }
                     }
+                    .onChange(of: filterByUuid) { _ in startScanner() }
+                    .onChange(of: filterBySkud) { _ in startScanner() }
+                    .onChange(of: filterBySvc) { _ in startScanner() }
+                    .onChange(of: filterStrongSignal) { _ in startScanner() }
                 }
             }
             .fileImporter(
@@ -161,6 +181,20 @@ struct ContentView: View {
         client.startScan(profile: p)
     }
 
+    private func startScanner() {
+        let skudHex = activeProfile?.isSkudIdMode == true 
+            ? activeProfile?.skudUuid.lowercased() 
+            : activeProfile?.skudUuid.replacingOccurrences(of: "-", with: "").prefix(12).lowercased()
+        
+        let filters = ScanFilters(
+            filterByUuidPrefix: filterByUuid,
+            filterBySkudIdPart: filterBySkud,
+            filterByServicePresence: filterBySvc,
+            minRssi: filterStrongSignal ? -75 : -100
+        )
+        client.startScanAll(filters: filters, skudIdHex: skudHex)
+    }
+
     private var stateText: String {
         switch client.state {
         case .idle: return "Idle"
@@ -173,7 +207,6 @@ struct ContentView: View {
     }
 }
 
-// ─── JSON document для fileExporter ───
 struct JSONDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json] }
     var text: String

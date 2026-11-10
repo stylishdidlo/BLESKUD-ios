@@ -10,16 +10,18 @@ struct ProfileEditorView: View {
     @State private var uuid = ""
     @State private var keyId = ""
     @State private var token = ""
-    @State private var rssi = "-70"
+    @State private var rssi = "-100"
+    @State private var isSkudIdMode = false // НОВОЕ
 
     var body: some View {
         NavigationView {
             Form {
                 Section("Профиль") {
                     TextField("Название (Дом, Офис)", text: $name)
+                    Toggle("Вводить SKUD_ID (12 hex)", isOn: $isSkudIdMode)
                 }
                 Section("Параметры СКУД") {
-                    TextField("Service UUID", text: $uuid)
+                    TextField(isSkudIdMode ? "SKUD_ID (напр. 00000001ec36)" : "Service UUID", text: $uuid)
                         .textInputAutocapitalization(.never)
                         .disableAutocorrection(true)
                     TextField("Key ID", text: $keyId)
@@ -50,8 +52,12 @@ struct ProfileEditorView: View {
             }
             .onAppear {
                 if let p = profile {
-                    name = p.name; uuid = p.skudUuid; keyId = String(p.keyId)
-                    token = p.aesToken; rssi = String(p.rssiThreshold)
+                    name = p.name
+                    uuid = p.skudUuid
+                    keyId = String(p.keyId)
+                    token = p.aesToken
+                    rssi = String(p.rssiThreshold)
+                    isSkudIdMode = p.isSkudIdMode
                 }
             }
         }
@@ -68,18 +74,12 @@ struct ProfileEditorView: View {
         let p = AccessProfile(
             id: profile?.id ?? UUID().uuidString,
             name: name,
-            skudUuid: normalizeUuid(uuid),
+            skudUuid: uuid.trimmingCharacters(in: .whitespaces), // Сохраняем как есть
             keyId: Int(keyId) ?? 0,
             aesToken: token,
-            rssiThreshold: Int(rssi) ?? -70
+            rssiThreshold: Int(rssi) ?? -100,
+            isSkudIdMode: isSkudIdMode
         )
         onSave(p)
-    }
-
-    private func normalizeUuid(_ raw: String) -> String {
-        let hex = raw.replacingOccurrences(of: "-", with: "").lowercased()
-        let padded = hex.padding(toLength: 32, withPad: "0", startingAt: 0)
-        let p = Array(padded.prefix(32))
-        return "\(String(p[0..<8]))-\(String(p[8..<12]))-\(String(p[12..<16]))-\(String(p[16..<20]))-\(String(p[20..<32]))"
     }
 }

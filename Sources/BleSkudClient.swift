@@ -8,14 +8,20 @@ enum SkudState: Equatable {
     case connecting(String), connected(String, Int), success(String), failed(String)
 }
 
+struct ScanFilters {
+    var filterByUuidPrefix: Bool = false
+    var filterBySkudIdPart: Bool = false
+    var filterByServicePresence: Bool = false
+    var minRssi: Int = -100
+}
+
 final class BleSkudClient: NSObject, ObservableObject {
     static let wUUID = CBUUID(string: "0000F401-0000-1000-8000-00805F9B34FB")
     static let nUUID = CBUUID(string: "0000F402-0000-1000-8000-00805F9B34FB")
+    static let ufanetPrefix = "f45389a8-d158-4964-b8ef-"
 
     @Published private(set) var state: SkudState = .idle
     @Published private(set) var logLines: [String] = []
-
-    // НОВОЕ: список для UI
     @Published private(set) var scannedPeripherals: [(peripheral: CBPeripheral, name: String, rssi: Int)] = []
 
     private var central: CBCentralManager!
@@ -27,6 +33,8 @@ final class BleSkudClient: NSObject, ObservableObject {
     private var rssi: Int = 0
     private var to: DispatchWorkItem?
     private var isRawScanning = false
+    private var currentFilters = ScanFilters()
+    private var currentSkudIdHex: String?
 
     override init() {
         super.init()
@@ -36,9 +44,14 @@ final class BleSkudClient: NSObject, ObservableObject {
     func startScan(profile p: AccessProfile) {
         prof = p; salt = Data(); rssi = 0; isRawScanning = false
         guard central.state == .poweredOn else { return fail("BT off") }
-        guard let u = UUID(uuidString: p.skudUuid) else { return fail("Bad UUID") }
-        set(.scanning); log("Scan \(p.skudUuid)")
+        
+        // Сборка UUID, если включен режим SKUD_ID
+        let fullUuidStr = p.isSkudIdMode ? "\(Self.ufanetPrefix)\(p.skudUuid.lowercased())" : p.skudUuid
+        guard let u = UUID(uuidString: fullUuidStr) else { return fail("Bad UUID format") }
+        
+        set(.scanning); log("Scan \(fullUuidStr)")
         central.scanForPeripherals(withServices: [CBUUID(nsuuid: u)], options: nil)
+        
         to?.cancel()
         let w = DispatchWorkItem { [weak self] in
             guard let s = self else { return }
@@ -47,16 +60,18 @@ final class BleSkudClient: NSObject, ObservableObject {
         to = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: w)
     }
-
-    // НОВОЕ: сканируем всё
-    func startScanAll() {
+    
+    func startScanAll(filters: ScanFilters, skudIdHex: String?) {
         guard central.state == .poweredOn else { return fail("BT off") }
         isRawScanning = true
+        currentFilters = filters
+        currentSkudIdHex = skudIdHex?.lowercased()
+        
         scannedPeripherals.removeAll()
         set(.scanning)
         log("Scanning ALL devices...")
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
-
+        
         DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in
             if self?.isRawScanning == true {
                 self?.stopScan()
@@ -65,8 +80,7 @@ final class BleSkudClient: NSObject, ObservableObject {
             }
         }
     }
-
-    // НОВОЕ: прямое подключение
+    
     func connectDirect(peripheral p: CBPeripheral) {
         isRawScanning = false
         stopScan()
@@ -135,34 +149,47 @@ extension BleSkudClient: CBCentralManagerDelegate {
 
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
                         advertisementData: [String: Any], rssi R: NSNumber) {
-
-        // Если это режим "сканировать всё"
+        
+        let rssi = R.intValue
+        
         if isRawScanning {
-            let rssi = R.intValue
-            if rssi < -100 { return }
+            if rssi < currentFilters.minRssi { return }
+            
+            // Берем уже распаршенные системой Service UUIDs
+            let uuids = advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? []
+            let uuidStrings = uuids.map { $0.uuidString.lowercased() }
+            
+            let hasUuid = uuidStrings.contains { $0.hasPrefix(Self.ufanetPrefix) }
+            if currentFilters.filterByUuidPrefix && !hasUuid { return }
+            
+            let hasSkud = if let skud = currentSkudIdHex { uuidStrings.contains { $0.contains(skud) } } else { false }
+            if currentFilters.filterBySkudIdPart && !hasSkud { return }
+            
+            if currentFilters.filterByServicePresence && uuidStrings.isEmpty { return }
+            
             let name = p.name ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? "Unknown"
-
+            let displayName = hasUuid ? "⭐ \(name)" : name
+            
             if !scannedPeripherals.contains(where: { $0.peripheral.identifier == p.identifier }) {
                 DispatchQueue.main.async {
-                    self.scannedPeripherals.append((p, name, rssi))
+                    self.scannedPeripherals.append((p, displayName, rssi))
                     self.scannedPeripherals.sort { $0.rssi > $1.rssi }
                 }
             }
             return
         }
-
-        // Обычный режим
-        guard let pr = prof, R.intValue >= pr.rssiThreshold else { return }
+        
+        // Обычный режим (по кнопке Start)
+        guard let pr = prof, rssi >= pr.rssiThreshold else { return }
         to?.cancel(); stopScan()
-        per = p; rssi = R.intValue; p.delegate = self
+        per = p; self.rssi = rssi; p.delegate = self
         set(.connecting(pr.skudUuid)); log("Found \(R)")
         c.connect(p, options: nil)
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         log("Connected")
-        // Ищем сервисы без фильтра по UUID (просим всё)
-        p.discoverServices(nil)
+        p.discoverServices(nil) // Ищем сервисы без фильтра
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
@@ -178,8 +205,7 @@ extension BleSkudClient: CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         if let e = error { return fail("Svc: \(e.localizedDescription)") }
         guard let s = p.services, !s.isEmpty else { return fail("No svc") }
-
-        // Просим найти наши характеристики во ВСЕХ сервисах
+        
         for svc in s {
             p.discoverCharacteristics([Self.wUUID, Self.nUUID], for: svc)
         }
@@ -191,8 +217,7 @@ extension BleSkudClient: CBPeripheralDelegate {
             if ch.uuid == Self.wUUID { wChar = ch }
             if ch.uuid == Self.nUUID { nChar = ch }
         }
-
-        // Если нашли обе - включаем уведомления
+        
         if let n = nChar, wChar != nil {
             p.setNotifyValue(true, for: n)
             log("Notif on, wait salt")
